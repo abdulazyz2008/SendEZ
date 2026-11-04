@@ -1,0 +1,21 @@
+# One-click deploy of SendEZ on Render (https://render.com/docs/blueprint-spec).
+# The app keeps its database, certificates and keys on the persistent disk at /var/data.
+services:
+  - type: web
+    name: sendez
+    runtime: python
+    buildCommand: pip install -r requirements-app.txt
+    startCommand: uvicorn sealsend.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips "*"
+    healthCheckPath: /healthz
+    autoDeployTrigger: commit
+    disk:
+      name: sendez-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SEALSEND_DATA_DIR
+        value: /var/data
+      - key: SEALSEND_WORKERS
+        value: "1"

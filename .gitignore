@@ -1,0 +1,12 @@
+data/
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+SealSend.zip
+SendEZ.zip
+.tools/
+build/
+dist/
+*.spec.bak

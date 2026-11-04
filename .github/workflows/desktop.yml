@@ -1,0 +1,120 @@
+# Builds the SendEZ desktop apps for Mac and Windows, checks that each built app really works,
+# and publishes them to a GitHub Release for a version tag such as v1.0.0, or when started by hand
+# from the Actions tab with a version number in "publish". The newest release is always at:
+#   https://github.com/abdulazyz2008/SendEZ/releases/latest/download/SendEZ-Mac.zip
+#   https://github.com/abdulazyz2008/SendEZ/releases/latest/download/SendEZ-Windows.zip
+name: Desktop apps
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Version to publish, e.g. 1.0.1 (creates tag v1.0.1 and the release). Leave empty for a test build."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14          # Apple Silicon; runs on every Mac sold since late 2020
+            name: Mac
+            exe: dist/SendEZ.app/Contents/MacOS/SendEZ
+          - os: windows-latest
+            name: Windows
+            exe: dist/SendEZ/SendEZ.exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Install
+        run: pip install -r requirements-desktop.txt
+      - name: Version number
+        shell: bash
+        env:
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; elif [[ -n "$PUBLISH" ]]; then v="${PUBLISH#v}"; else v="1.0.0"; fi
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Version must look like 1.0.0, got '$v'"; exit 1; }
+          echo "SEALSEND_VERSION=$v" >> "$GITHUB_ENV"
+      - name: Build the app
+        run: pyinstaller packaging/sealsend.spec --noconfirm
+      - name: Smoke test the built app (sample workbook, test-mode send, seal check, 60-student batch)
+        shell: bash
+        run: python packaging/smoke_test.py "${{ matrix.exe }}"
+      - name: Zip (Mac)
+        if: runner.os == 'macOS'
+        run: ditto -c -k --sequesterRsrc --keepParent dist/SendEZ.app SendEZ-Mac.zip
+      - name: Zip (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/SendEZ -DestinationPath SendEZ-Windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SendEZ-${{ matrix.name }}
+          path: SendEZ-${{ matrix.name }}.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Version tag
+        id: tag
+        shell: bash
+        env:
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then t="$GITHUB_REF_NAME"; else t="v${PUBLISH#v}"; fi
+          [[ "$t" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Version must look like 1.0.0, got '$t'"; exit 1; }
+          echo "tag=$t" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: SendEZ ${{ steps.tag.outputs.tag }}
+          files: out/*.zip
+          make_latest: "true"
+          body: |
+            **Download:** `SendEZ-Mac.zip` (Mac) or `SendEZ-Windows.zip` (Windows 10/11), below.
+
+            **Mac:** unzip, drag **SendEZ** into Applications, open it. If macOS says it can't check the app:
+            System Settings → Privacy & Security → scroll down → **Open Anyway** (only once).
+
+            **Windows:** unzip, open the **SendEZ** folder, double-click **SendEZ.exe**. If you see
+            "Windows protected your PC": **More info → Run anyway** (only once).
